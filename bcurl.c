@@ -1,17 +1,4 @@
-/*
- * bcurl.c — BHTTP binary client
- *
- * Usage:  ./bcurl [-v] <host:port/path>
- * Example: ./bcurl -v localhost:9000/index.html
- *
- * Behaviour:
- *   - Opens exactly ONE TCP connection (never a second)
- *   - Builds a binary REQUEST frame and sends it
- *   - Reads HEADERS + DATA frames; writes body to stdout
- *   - -v: hexdumps every frame to stderr
- *   - Exits non-zero on 4xx / 5xx status codes
- *   - Skips unknown frame types cleanly (skip rule)
- */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,12 +12,10 @@
 
 #include "bhttp_protocol.h"
 
-/* ───────────────────────── globals ─────────────────────────────────── */
 
-static int verbose = 0;   /* -v flag */
-static int sock_fd = -1;  /* the one and only connection */
+static int verbose = 0;   
+static int sock_fd = -1;  
 
-/* ───────────────────────── I/O helpers ─────────────────────────────── */
 
 static int read_exact(int fd, void *buf, size_t n)
 {
@@ -54,7 +39,6 @@ static int write_exact(int fd, const void *buf, size_t n)
     return 0;
 }
 
-/* ───────────────────────── Hexdump ─────────────────────────────────── */
 
 static void hexdump(const char *label, const uint8_t *buf, size_t len)
 {
@@ -80,12 +64,6 @@ static void hexdump(const char *label, const uint8_t *buf, size_t len)
     fprintf(stderr, "\n");
 }
 
-/* ───────────────────────── TCP connect ─────────────────────────────── */
-
-/*
- * Open exactly one TCP connection to host:port.
- * Returns socket fd or -1.
- */
 static int tcp_connect(const char *host, int port)
 {
     struct addrinfo hints = {
@@ -120,24 +98,11 @@ static int tcp_connect(const char *host, int port)
     return fd;
 }
 
-/* ───────────────────────── Build REQUEST frame ─────────────────────── */
 
-/*
- * Build a REQUEST frame for a GET request and return a malloc'd buffer.
- * *out_len is set to the total frame length (header + payload).
- */
 static uint8_t *build_request_frame(const char *path, uint32_t stream_id,
                                      const char *host, size_t *out_len)
 {
-    /* Payload:
-     *   method     (1)
-     *   path_len   (2)
-     *   path       (path_len)
-     *   hdr_count  (1)
-     *   header[0]: host header  (index + vlen + value)
-     *   header[1]: user-agent   (index + vlen + value)
-     *   header[2]: accept       (index + vlen + value)
-     */
+    
     const char *ua    = "bcurl/1.0";
     const char *accept = "* /*";
 
@@ -146,48 +111,43 @@ static uint8_t *build_request_frame(const char *path, uint32_t stream_id,
     size_t ua_len    = strlen(ua);
     size_t acc_len   = strlen(accept);
 
-    /* Compute payload size */
+    
     size_t payload_sz =
-        1 +                         /* method */
-        2 + path_len +              /* path_len + path */
-        1 +                         /* hdr_count */
-        1 + 2 + host_len +          /* host header */
-        1 + 2 + ua_len +            /* user-agent header */
-        1 + 2 + acc_len;            /* accept header */
+        1 +                        
+        2 + path_len +             
+        1 +                        
+        1 + 2 + host_len +         
+        1 + 2 + ua_len +           
+        1 + 2 + acc_len;           
 
     size_t total = FRAME_HEADER_SIZE + payload_sz;
     uint8_t *buf = malloc(total);
     if (!buf) { perror("malloc"); return NULL; }
 
-    /* Fill payload */
     uint8_t *p = buf + FRAME_HEADER_SIZE;
 
-    /* method = GET */
     *p++ = METHOD_GET;
 
-    /* path */
     put_u16(p, (uint16_t)path_len); p += 2;
     memcpy(p, path, path_len);      p += path_len;
 
-    /* header count = 3 */
+
     *p++ = 3;
 
-    /* host */
+
     *p++ = HDR_HOST;
     put_u16(p, (uint16_t)host_len); p += 2;
     memcpy(p, host, host_len);      p += host_len;
 
-    /* user-agent */
+    
     *p++ = HDR_USER_AGENT;
     put_u16(p, (uint16_t)ua_len);   p += 2;
     memcpy(p, ua, ua_len);          p += ua_len;
 
-    /* accept */
     *p++ = HDR_ACCEPT;
     put_u16(p, (uint16_t)acc_len);  p += 2;
     memcpy(p, accept, acc_len);     p += acc_len;
 
-    /* Fill frame header */
     encode_frame_hdr(buf, (uint32_t)payload_sz,
                      FRAME_REQUEST, FLAG_END_HEADERS, stream_id);
 
@@ -195,12 +155,6 @@ static uint8_t *build_request_frame(const char *path, uint32_t stream_id,
     return buf;
 }
 
-/* ───────────────────────── Response reading ────────────────────────── */
-
-/*
- * Read frames from the server for stream_id until END_STREAM.
- * Returns the HTTP status code, or -1 on error.
- */
 static int read_response(int fd, uint32_t stream_id)
 {
     int status_code = -1;
@@ -216,7 +170,6 @@ static int read_response(int fd, uint32_t stream_id)
         bhttp_frame_hdr_t hdr;
         decode_frame_hdr(hdr_buf, &hdr);
 
-        /* Read payload */
         uint8_t *payload = NULL;
         if (hdr.length > 0) {
             if (hdr.length > 16 * 1024 * 1024) {
@@ -232,7 +185,6 @@ static int read_response(int fd, uint32_t stream_id)
             }
         }
 
-        /* hexdump */
         if (verbose) {
             uint8_t *full = malloc(FRAME_HEADER_SIZE + hdr.length);
             if (full) {
@@ -258,7 +210,6 @@ static int read_response(int fd, uint32_t stream_id)
             fprintf(stderr, "[bcurl] status %d, %d headers\n",
                     status_code, hdr_count);
 
-            /* Parse and print response headers */
             if (hdr_count > 0 && hdr.length > 3) {
                 bhttp_header_t hdrs[32] = {0};
                 int n = hdr_count > 32 ? 32 : hdr_count;
@@ -274,7 +225,6 @@ static int read_response(int fd, uint32_t stream_id)
                 }
             }
 
-            /* Check END_STREAM on HEADERS (e.g. 404 with no body) */
             if (hdr.flags & FLAG_END_STREAM) got_end_stream = 1;
             break;
         }
@@ -284,7 +234,6 @@ static int read_response(int fd, uint32_t stream_id)
                 fprintf(stderr, "[bcurl] unexpected stream id %u\n", hdr.stream_id);
                 free(payload); return -1;
             }
-            /* Write body to stdout */
             if (payload && hdr.length > 0) {
                 fwrite(payload, 1, hdr.length, stdout);
                 fflush(stdout);
@@ -294,7 +243,6 @@ static int read_response(int fd, uint32_t stream_id)
         }
 
         default:
-            /* Skip rule — discard payload, continue */
             fprintf(stderr, "[bcurl] skipping unknown frame type 0x%02x "
                     "(%u bytes)\n", hdr.type, hdr.length);
             break;
@@ -307,16 +255,9 @@ static int read_response(int fd, uint32_t stream_id)
 }
 
 
-/* ───────────────────────── URL parsing ───────────────────────────── */
-
-/*
- * Parse "host:port/path" into components.
- * Modifies url_buf in place.
- */
 static int parse_url(char *url_buf, char **host_out,
                      int *port_out, char **path_out)
 {
-    /* host[:port]/path */
     char *colon = strchr(url_buf, ':');
     char *slash = strchr(url_buf, '/');
 
@@ -328,7 +269,7 @@ static int parse_url(char *url_buf, char **host_out,
     } else if (slash) {
         *slash = '\0';
         *host_out = url_buf;
-        *port_out = 9000; /* default */
+        *port_out = 9000; 
         *slash = '/';
         *path_out = slash;
     } else {
@@ -339,7 +280,6 @@ static int parse_url(char *url_buf, char **host_out,
     return 0;
 }
 
-/* ───────────────────────── main ────────────────────────────────────── */
 
 int main(int argc, char *argv[])
 {
@@ -371,14 +311,11 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "[bcurl] GET %s from %s:%d\n", path, host, port);
 
-    /* Open exactly one TCP connection */
     sock_fd = tcp_connect(host, port);
     if (sock_fd < 0) return 1;
 
-    /* Stream ID 1 for first (and, in this demo, only) request */
     uint32_t stream_id = 1;
 
-    /* Build and send REQUEST frame */
     size_t   frame_len;
     uint8_t *frame = build_request_frame(path, stream_id, host, &frame_len);
     if (!frame) { close(sock_fd); return 1; }
@@ -391,7 +328,6 @@ int main(int argc, char *argv[])
     }
     free(frame);
 
-    /* Read response */
     int status = read_response(sock_fd, stream_id);
     close(sock_fd);
 
@@ -402,6 +338,5 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "[bcurl] done, status %d\n", status);
 
-    /* Exit non-zero on 4xx / 5xx */
     return (status >= 400) ? 1 : 0;
 }
