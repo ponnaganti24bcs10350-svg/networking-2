@@ -1,16 +1,4 @@
-/*
- * bserve.c — BHTTP binary server
- *
- * Usage:  ./bserve <root_dir> <port>
- * Example: ./bserve ./www 9000
- *
- * Behaviour:
- *   - Accepts one TCP connection at a time (single-threaded for clarity)
- *   - Reads binary REQUEST frames indefinitely (connection stays open)
- *   - Serves files from root_dir
- *   - Responds 200 + DATA on success, 404 if missing, 400 if malformed
- *   - Silently skips unknown frame types (versioning skip rule)
- */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,9 +14,6 @@
 
 #include "bhttp_protocol.h"
 
-/* ───────────────────────── I/O helpers ─────────────────────────────── */
-
-/* Read exactly n bytes from fd into buf. Returns 0 on success, -1 on error/EOF. */
 static int read_exact(int fd, void *buf, size_t n)
 {
     size_t done = 0;
@@ -40,7 +25,6 @@ static int read_exact(int fd, void *buf, size_t n)
     return 0;
 }
 
-/* Write exactly n bytes from buf to fd. */
 static int write_exact(int fd, const void *buf, size_t n)
 {
     size_t done = 0;
@@ -52,7 +36,6 @@ static int write_exact(int fd, const void *buf, size_t n)
     return 0;
 }
 
-/* ───────────────────────── Hexdump helper ──────────────────────────── */
 
 static void hexdump(const char *label, const uint8_t *buf, size_t len)
 {
@@ -62,7 +45,6 @@ static void hexdump(const char *label, const uint8_t *buf, size_t len)
         fprintf(stderr, "%02x ", buf[i]);
         if ((i + 1) % 8  == 0 && (i + 1) % 16 != 0) fprintf(stderr, " ");
         if ((i + 1) % 16 == 0 || i + 1 == len) {
-            /* ASCII side */
             size_t line_start = (i / 16) * 16;
             size_t pad = 16 - (i % 16 + 1);
             for (size_t p = 0; p < pad; p++) fprintf(stderr, "   ");
@@ -79,16 +61,12 @@ static void hexdump(const char *label, const uint8_t *buf, size_t len)
 }
 
 
-/* ───────────────────────── Response senders ────────────────────────── */
-
-/* Send a HEADERS frame with the given status code and no extra headers */
 static int send_headers_frame(int fd, uint32_t stream_id,
                                uint16_t status, uint8_t flags)
 {
-    /* Payload: 2-byte status + 1-byte header count (0) */
     uint8_t payload[3];
     put_u16(payload, status);
-    payload[2] = 0; /* no headers */
+    payload[2] = 0; 
 
     uint8_t hdr[FRAME_HEADER_SIZE];
     encode_frame_hdr(hdr, sizeof(payload), FRAME_HEADERS, flags, stream_id);
@@ -101,28 +79,21 @@ static int send_headers_frame(int fd, uint32_t stream_id,
     return write_exact(fd, out, sizeof(out));
 }
 
-/* Send HEADERS(200) with Content-Length and Content-Type */
 static int send_headers_200(int fd, uint32_t stream_id,
                               off_t file_size, const char *mime)
 {
-    /* Build payload:
-     *   status (2) + hdr_count (1) + headers
-     *   We send 2 headers: content-length and content-type
-     */
+    
     uint8_t payload[512];
     size_t  pos = 0;
 
     put_u16(payload + pos, 200); pos += 2;
-    payload[pos++] = 2; /* header count */
-
-    /* content-length */
+    payload[pos++] = 2; 
     char cl_val[32];
     int cl_len = snprintf(cl_val, sizeof(cl_val), "%lld", (long long)file_size);
     payload[pos++] = HDR_CONTENT_LENGTH;
     put_u16(payload + pos, (uint16_t)cl_len); pos += 2;
     memcpy(payload + pos, cl_val, cl_len); pos += cl_len;
 
-    /* content-type */
     size_t mt_len = strlen(mime);
     payload[pos++] = HDR_CONTENT_TYPE;
     put_u16(payload + pos, (uint16_t)mt_len); pos += 2;
@@ -140,7 +111,6 @@ static int send_headers_200(int fd, uint32_t stream_id,
     return write_exact(fd, out, FRAME_HEADER_SIZE + pos);
 }
 
-/* Send a DATA frame. last=1 sets END_STREAM. */
 static int send_data_frame(int fd, uint32_t stream_id,
                             const uint8_t *data, size_t len, int last)
 {
@@ -151,7 +121,6 @@ static int send_data_frame(int fd, uint32_t stream_id,
     if (write_exact(fd, hdr, FRAME_HEADER_SIZE) != 0) return -1;
     if (len > 0 && write_exact(fd, data, len) != 0) return -1;
 
-    /* hexdump header + first 64 bytes of body */
     uint8_t preview[FRAME_HEADER_SIZE + 64];
     memcpy(preview, hdr, FRAME_HEADER_SIZE);
     size_t plen = len > 64 ? 64 : len;
@@ -162,7 +131,6 @@ static int send_data_frame(int fd, uint32_t stream_id,
     return 0;
 }
 
-/* ───────────────────────── MIME type guessing ──────────────────────── */
 
 static const char *guess_mime(const char *path)
 {
@@ -180,12 +148,6 @@ static const char *guess_mime(const char *path)
     return "application/octet-stream";
 }
 
-/* ───────────────────────── Request handler ─────────────────────────── */
-
-/*
- * Handle a single REQUEST frame whose payload is in `payload`.
- * Serves the file or sends an appropriate error response.
- */
 static void handle_request(int client_fd, uint32_t stream_id,
                              const uint8_t *payload, uint32_t plen,
                              const char *root)
@@ -193,12 +155,9 @@ static void handle_request(int client_fd, uint32_t stream_id,
     const uint8_t *p   = payload;
     uint32_t       rem = plen;
 
-    /* Method */
     if (rem < 1) goto bad_request;
     uint8_t method = *p++; rem--;
-    (void)method; /* currently only GET supported */
-
-    /* Path length + path */
+    (void)method; 
     if (rem < 2) goto bad_request;
     uint16_t path_len = get_u16(p); p += 2; rem -= 2;
     if (rem < path_len) goto bad_request;
@@ -209,7 +168,6 @@ static void handle_request(int client_fd, uint32_t stream_id,
     path_buf[path_len] = '\0';
     p += path_len; rem -= path_len;
 
-    /* Header count + headers (parse but we don't use them for GET) */
     if (rem < 1) goto bad_request;
     uint8_t hdr_count = *p++; rem--;
     bhttp_header_t hdrs[32] = {0};
@@ -226,7 +184,6 @@ static void handle_request(int client_fd, uint32_t stream_id,
         free(hdrs[i].name); free(hdrs[i].value);
     }
 
-    /* Build filesystem path — prevent directory traversal */
     if (strstr(path_buf, "..")) {
         fprintf(stderr, "[server] path traversal blocked: %s\n", path_buf);
         send_headers_frame(client_fd, stream_id, 400, FLAG_END_HEADERS | FLAG_END_STREAM);
@@ -234,13 +191,11 @@ static void handle_request(int client_fd, uint32_t stream_id,
     }
 
     char fs_path[8192];
-    /* If path starts with '/', skip the leading slash */
     const char *rel = path_buf[0] == '/' ? path_buf + 1 : path_buf;
     snprintf(fs_path, sizeof(fs_path), "%s/%s", root, rel);
 
     fprintf(stderr, "[server] GET %s → %s\n", path_buf, fs_path);
 
-    /* Try to open the file */
     struct stat st;
     if (stat(fs_path, &st) != 0 || !S_ISREG(st.st_mode)) {
         fprintf(stderr, "[server] 404 not found\n");
@@ -259,7 +214,6 @@ static void handle_request(int client_fd, uint32_t stream_id,
     const char *mime = guess_mime(fs_path);
     send_headers_200(client_fd, stream_id, st.st_size, mime);
 
-    /* Stream the file in 64 KiB chunks */
     uint8_t chunk[65536];
     off_t   remaining = st.st_size;
     while (remaining > 0) {
@@ -281,14 +235,12 @@ bad_request:
                        FLAG_END_HEADERS | FLAG_END_STREAM);
 }
 
-/* ───────────────────────── Connection loop ─────────────────────────── */
 
 static void handle_connection(int client_fd, const char *root)
 {
     fprintf(stderr, "[server] connection established\n");
 
     for (;;) {
-        /* Read 9-byte frame header */
         uint8_t hdr_buf[FRAME_HEADER_SIZE];
         if (read_exact(client_fd, hdr_buf, FRAME_HEADER_SIZE) != 0) {
             fprintf(stderr, "[server] connection closed / read error\n");
@@ -302,7 +254,6 @@ static void handle_connection(int client_fd, const char *root)
                 "stream=%u length=%u\n",
                 hdr.type, hdr.flags, hdr.stream_id, hdr.length);
 
-        /* Allocate payload buffer */
         uint8_t *payload = NULL;
         if (hdr.length > 0) {
             if (hdr.length > 16 * 1024 * 1024) { /* 16 MiB sanity cap */
@@ -318,7 +269,6 @@ static void handle_connection(int client_fd, const char *root)
             }
         }
 
-        /* hexdump header + payload */
         uint8_t *full = malloc(FRAME_HEADER_SIZE + hdr.length);
         if (full) {
             memcpy(full, hdr_buf, FRAME_HEADER_SIZE);
@@ -334,7 +284,6 @@ static void handle_connection(int client_fd, const char *root)
             break;
 
         default:
-            /* Skip rule: unknown type → discard payload, continue */
             fprintf(stderr, "[server] unknown frame type 0x%02x — skipping %u bytes\n",
                     hdr.type, hdr.length);
             break;
@@ -347,7 +296,6 @@ static void handle_connection(int client_fd, const char *root)
     fprintf(stderr, "[server] connection closed\n");
 }
 
-/* ───────────────────────── main ────────────────────────────────────── */
 
 int main(int argc, char *argv[])
 {
@@ -359,7 +307,6 @@ int main(int argc, char *argv[])
     const char *root = argv[1];
     int         port = atoi(argv[2]);
 
-    /* Ignore SIGPIPE so a closed client socket doesn't kill the server */
     signal(SIGPIPE, SIG_IGN);
 
     int srv_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -392,7 +339,6 @@ int main(int argc, char *argv[])
         fprintf(stderr, "[server] accepted connection from %s:%d\n",
                 inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port));
 
-        /* Single-threaded: handle one client at a time */
         handle_connection(client_fd, root);
     }
 
